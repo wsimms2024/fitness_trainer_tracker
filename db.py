@@ -29,11 +29,18 @@ def epley(weight, reps):
     return weight * (1 + reps / 30.0)
 
 
+def normalize_exercise(exercise):
+    exercise = exercise.strip()
+    # Capitalize first letter of each word; preserves all-caps acronyms like SLDL
+    # if the user types them correctly, and fixes "squat" → "Squat".
+    return " ".join(word[0].upper() + word[1:] for word in exercise.split() if word)
+
+
 def add_lift(lift_date, exercise, weight, reps):
     with get_conn() as conn:
         conn.execute(
             "INSERT INTO lifts (date, exercise, weight, reps) VALUES (?, ?, ?, ?)",
-            (str(lift_date), exercise, float(weight), int(reps)),
+            (str(lift_date), normalize_exercise(exercise), float(weight), int(reps)),
         )
         conn.commit()
 
