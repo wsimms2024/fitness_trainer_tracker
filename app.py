@@ -44,6 +44,60 @@ if submitted:
 st.divider()
 
 # ── Bulk Upload ───────────────────────────────────────────────────────────────
+
+# Maps Liftoff exercise names (lowercase) to the canonical names used in this app.
+# Add entries here when you add new exercises to EXERCISES.
+EXERCISE_MAP = {
+    "bench press":            "Bench",
+    "romanian deadlift":      "SLDL",
+    "stiff leg deadlift":     "SLDL",
+    "smith romanian deadlift":"SLDL",
+}
+
+
+def _map_exercise(name):
+    return EXERCISE_MAP.get(name.strip().lower(), name.strip())
+
+
+def _parse_liftoff(df):
+    """Handle Liftoff exports where every set is its own row.
+
+    Groups by (date, exercise) and keeps the top set by e1RM.
+    Zero-weight rows (bodyweight moves) are silently dropped.
+    """
+    df = df.copy()
+    df.columns = [c.strip().lower() for c in df.columns]
+
+    df["date_only"] = pd.to_datetime(df["date"], errors="coerce").dt.date
+    df = df.dropna(subset=["date_only"])
+    df["weight"] = pd.to_numeric(df["weight"], errors="coerce").fillna(0)
+    df["reps"]   = pd.to_numeric(df["reps"],   errors="coerce").fillna(0)
+
+    # Drop bodyweight / zero-weight rows — e1RM is meaningless for them
+    df = df[df["weight"] > 0]
+
+    df["e1rm"] = df["weight"] * (1 + df["reps"] / 30.0)
+
+    # One top set per exercise per day
+    idx      = df.groupby(["date_only", "exercise"])["e1rm"].idxmax()
+    top_sets = df.loc[idx]
+
+    valid, errors = [], []
+    for _, row in top_sets.iterrows():
+        try:
+            exercise = _map_exercise(str(row["exercise"]))
+            weight   = float(row["weight"])
+            reps     = int(float(row["reps"]))
+            if reps < 1:
+                raise ValueError(f"reps must be ≥ 1")
+            valid.append({"date": row["date_only"], "exercise": exercise,
+                          "weight": weight, "reps": reps})
+        except Exception as e:
+            errors.append(f"{row.get('date_only', '?')} — {row.get('exercise', '?')}: {e}")
+
+    return valid, errors, None
+
+
 def parse_upload(uploaded_file):
     """Parse a CSV or TXT file into valid lift dicts and error strings.
 
@@ -57,19 +111,18 @@ def parse_upload(uploaded_file):
         text = content.decode("latin-1")
 
     first_line = text.split("\n")[0]
-    if "\t" in first_line:
-        sep = "\t"
-    elif ";" in first_line:
-        sep = ";"
-    else:
-        sep = ","
+    sep = "\t" if "\t" in first_line else ";" if ";" in first_line else ","
 
     try:
         df = pd.read_csv(io.StringIO(text), sep=sep)
     except Exception as e:
         return [], [], f"Could not read file: {e}"
 
-    # Map common column name variants to canonical names
+    # Liftoff exports always have a "Set Order" column
+    if "Set Order" in df.columns or "set order" in [c.lower() for c in df.columns]:
+        return _parse_liftoff(df)
+
+    # ── Generic CSV path ──────────────────────────────────────────────────────
     aliases = {
         "date":     ["date", "day", "workout_date", "session_date", "training_date"],
         "exercise": ["exercise", "lift", "movement", "exercise_name", "name"],
@@ -98,15 +151,15 @@ def parse_upload(uploaded_file):
     for i, row in df.iterrows():
         try:
             lift_date = pd.to_datetime(row["date"]).date()
-            exercise  = str(row["exercise"]).strip()
+            exercise  = _map_exercise(str(row["exercise"]))
             weight    = float(row["weight"])
             reps      = int(float(row["reps"]))
             if not exercise or exercise.lower() == "nan":
                 raise ValueError("exercise is empty")
             if weight <= 0:
-                raise ValueError(f"weight must be > 0, got {weight}")
+                raise ValueError(f"weight must be > 0")
             if reps < 1:
-                raise ValueError(f"reps must be ≥ 1, got {reps}")
+                raise ValueError(f"reps must be ≥ 1")
             valid.append({"date": lift_date, "exercise": exercise, "weight": weight, "reps": reps})
         except Exception as e:
             errors.append(f"Row {i + 2}: {e}")
