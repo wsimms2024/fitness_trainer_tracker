@@ -99,6 +99,30 @@ def get_lifts_for_exercise(exercise):
     return result
 
 
+def bulk_insert_lifts(lifts):
+    """Insert a list of lift dicts, skipping exact duplicates (same date + exercise + weight + reps).
+    Returns (inserted, skipped) counts.
+    """
+    inserted = skipped = 0
+    with get_conn() as conn:
+        for lift in lifts:
+            exercise = normalize_exercise(lift["exercise"])
+            exists = conn.execute(
+                "SELECT 1 FROM lifts WHERE date=? AND exercise=? AND weight=? AND reps=?",
+                (str(lift["date"]), exercise, float(lift["weight"]), int(lift["reps"])),
+            ).fetchone()
+            if exists:
+                skipped += 1
+            else:
+                conn.execute(
+                    "INSERT INTO lifts (date, exercise, weight, reps) VALUES (?, ?, ?, ?)",
+                    (str(lift["date"]), exercise, float(lift["weight"]), int(lift["reps"])),
+                )
+                inserted += 1
+        conn.commit()
+    return inserted, skipped
+
+
 def get_plateau_flags():
     """Returns the set of exercise names that have stalled over the last 3 sessions.
 

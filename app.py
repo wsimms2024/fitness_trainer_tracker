@@ -1,3 +1,4 @@
+import io
 import streamlit as st
 import pandas as pd
 from datetime import date
@@ -39,6 +40,117 @@ if submitted:
             )
     else:
         st.error("Weight must be > 0 and reps must be ≥ 1.")
+
+st.divider()
+
+# ── Bulk Upload ───────────────────────────────────────────────────────────────
+def parse_upload(uploaded_file):
+    """Parse a CSV or TXT file into valid lift dicts and error strings.
+
+    Returns (valid_rows, row_errors, fatal_error).
+    fatal_error is a string if the file can't be parsed at all, else None.
+    """
+    content = uploaded_file.read()
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        text = content.decode("latin-1")
+
+    first_line = text.split("\n")[0]
+    if "\t" in first_line:
+        sep = "\t"
+    elif ";" in first_line:
+        sep = ";"
+    else:
+        sep = ","
+
+    try:
+        df = pd.read_csv(io.StringIO(text), sep=sep)
+    except Exception as e:
+        return [], [], f"Could not read file: {e}"
+
+    # Map common column name variants to canonical names
+    aliases = {
+        "date":     ["date", "day", "workout_date", "session_date", "training_date"],
+        "exercise": ["exercise", "lift", "movement", "exercise_name", "name"],
+        "weight":   ["weight", "weight_lbs", "lbs", "load", "weight (lbs)", "weight(lbs)"],
+        "reps":     ["reps", "rep", "repetitions", "reps_completed", "rep_count"],
+    }
+    lowered = {c.strip().lower(): c for c in df.columns}
+    rename = {}
+    for canonical, options in aliases.items():
+        for opt in options:
+            if opt in lowered:
+                rename[lowered[opt]] = canonical
+                break
+    df = df.rename(columns=rename)
+
+    missing = {"date", "exercise", "weight", "reps"} - set(df.columns)
+    if missing:
+        found = ", ".join(df.columns.tolist())
+        return [], [], (
+            f"Missing required columns: {', '.join(sorted(missing))}. "
+            f"Columns found in file: {found}. "
+            f"Rename your headers to: date, exercise, weight, reps."
+        )
+
+    valid, errors = [], []
+    for i, row in df.iterrows():
+        try:
+            lift_date = pd.to_datetime(row["date"]).date()
+            exercise  = str(row["exercise"]).strip()
+            weight    = float(row["weight"])
+            reps      = int(float(row["reps"]))
+            if not exercise or exercise.lower() == "nan":
+                raise ValueError("exercise is empty")
+            if weight <= 0:
+                raise ValueError(f"weight must be > 0, got {weight}")
+            if reps < 1:
+                raise ValueError(f"reps must be ≥ 1, got {reps}")
+            valid.append({"date": lift_date, "exercise": exercise, "weight": weight, "reps": reps})
+        except Exception as e:
+            errors.append(f"Row {i + 2}: {e}")
+
+    return valid, errors, None
+
+
+with st.expander("Upload historical data (CSV / TXT)"):
+    st.markdown(
+        "File must have columns: **date, exercise, weight, reps** "
+        "(header names are flexible — see examples below).\n\n"
+        "**Example CSV:**\n"
+        "```\ndate,exercise,weight,reps\n"
+        "2024-01-01,Squat,315,3\n"
+        "2024-01-01,Bench,225,5\n"
+        "2024-01-08,SLDL,275,4\n```"
+    )
+
+    uploaded = st.file_uploader("Choose file", type=["csv", "txt"])
+
+    if uploaded:
+        valid_rows, row_errors, fatal = parse_upload(uploaded)
+
+        if fatal:
+            st.error(fatal)
+        else:
+            if row_errors:
+                with st.expander(f"{len(row_errors)} row(s) could not be parsed — click to view"):
+                    for err in row_errors:
+                        st.text(err)
+
+            if valid_rows:
+                preview = pd.DataFrame(valid_rows)
+                preview["e1RM (lbs)"] = preview.apply(
+                    lambda r: round(db.epley(r["weight"], r["reps"]), 1), axis=1
+                )
+                st.dataframe(preview, use_container_width=True, hide_index=True)
+
+                if st.button(f"Import {len(valid_rows)} lift(s)", type="primary"):
+                    inserted, skipped = db.bulk_insert_lifts(valid_rows)
+                    st.success(f"Done — {inserted} imported, {skipped} duplicate(s) skipped.")
+                    st.rerun()
+            else:
+                st.warning("No valid rows found in the file.")
 
 st.divider()
 
